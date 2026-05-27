@@ -1,0 +1,9 @@
+version: v2
+name: buf.build/ghostbunker/protocol
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE
+
