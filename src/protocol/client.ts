@@ -17,6 +17,12 @@ import {
   SendEncryptedMessageSchema,
 } from "../gen/proto/ghost_bunker_v1_pb";
 
+/** WebSocket subprotocol required by Ghost Bunker server v0.3+. */
+export const GHOST_BUNKER_WS_SUBPROTOCOL = "ghost-bunker.v0.1";
+
+const WS_CONNECT_FAILED_MSG =
+  "WebSocket connection failed. Check URL, server status, allowed origin, and subprotocol.";
+
 type ClientCapabilitiesInput = {
   e2eeSupported: boolean;
   maxCiphertextBytesSupported: number;
@@ -113,13 +119,25 @@ export class GhostBunkerClient {
   async connectAndHello(params: ConnectHelloParams): Promise<void> {
     if (this.ws) throw new Error("Already connected.");
 
-    const ws = new WebSocket(this.url);
+    const ws = new WebSocket(this.url, GHOST_BUNKER_WS_SUBPROTOCOL);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
     const openPromise = new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve(), { once: true });
-      ws.addEventListener("error", () => reject(new Error("WebSocket error during connect.")), { once: true });
+      let opened = false;
+      const fail = () => {
+        if (!opened) reject(new Error(WS_CONNECT_FAILED_MSG));
+      };
+      ws.addEventListener(
+        "open",
+        () => {
+          opened = true;
+          resolve();
+        },
+        { once: true },
+      );
+      ws.addEventListener("error", fail, { once: true });
+      ws.addEventListener("close", fail, { once: true });
     });
     await openPromise;
 

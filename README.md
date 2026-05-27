@@ -44,7 +44,17 @@ npm run dev
 
 Open the printed Vite URL (e.g. `http://localhost:5173`) and connect to `ws://localhost:8080/ghost-bunker`.
 
+**Server v0.3** requires the WebSocket subprotocol `ghost-bunker.v0.1` during the upgrade handshake. This client negotiates it automatically. Without the subprotocol, the server may respond with HTTP 200 instead of upgrading the connection.
+
+Manual WebSocket checks with [wscat](https://github.com/websockets/wscat):
+
+```bash
+wscat -c ws://localhost:8080/ghost-bunker -s ghost-bunker.v0.1
+```
+
 Use **Create secure room key** to generate a local 32-byte key and copy the invite link for other participants.
+
+See [docs/manual-testing.md](docs/manual-testing.md) for more manual test notes.
 
 ## Tests
 

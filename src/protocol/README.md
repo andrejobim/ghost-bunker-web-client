@@ -4,6 +4,7 @@ This folder contains the browser-side implementation of:
 
 - v0.1 envelope encoding/decoding (generated Protobuf bindings under `src/gen/`)
 - v0.1 WebSocket state machine (HELLO → WELCOME → JOIN_ROOM → SEND_ENCRYPTED_MESSAGE)
+- WebSocket subprotocol `ghost-bunker.v0.1` (required by server v0.3+)
 - client-side E2EE v0.2: **32-byte room key** imported as AES-256-GCM (wire `cipher_suite` unchanged)
 
 Hard constraints enforced by this client:
