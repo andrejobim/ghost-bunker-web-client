@@ -1,13 +1,32 @@
+import { bytesToBase64Url, randomBytes } from "./protocol/bytes";
 import { GhostBunkerClient } from "./protocol/client";
 import { RoomCryptoV01 } from "./protocol/crypto_v01";
+import {
+  buildInviteLink,
+  locationWithoutGbKeyFragment,
+  parseInviteFromLocation,
+  validateRoomId,
+} from "./protocol/invite_link";
+import {
+  exportRoomKeyBase64Url,
+  generateRoomKeyBytes,
+  importRoomKeyBase64Url,
+} from "./protocol/room_key";
 import { asciiVisibleNoWhitespace, validateChatPlaintext } from "./protocol/validation";
 
 const el = {
   wsUrl: document.getElementById("wsUrl") as HTMLInputElement,
   nickname: document.getElementById("nickname") as HTMLInputElement,
   roomId: document.getElementById("roomId") as HTMLInputElement,
-  passphrase: document.getElementById("passphrase") as HTMLInputElement,
-  togglePassphraseBtn: document.getElementById("togglePassphraseBtn") as HTMLButtonElement,
+  roomKeyState: document.getElementById("roomKeyState") as HTMLDivElement,
+  createRoomKeyBtn: document.getElementById("createRoomKeyBtn") as HTMLButtonElement,
+  importRoomKeyBtn: document.getElementById("importRoomKeyBtn") as HTMLButtonElement,
+  copyInviteLinkBtn: document.getElementById("copyInviteLinkBtn") as HTMLButtonElement,
+  importPanel: document.getElementById("importPanel") as HTMLDivElement,
+  roomKeyImport: document.getElementById("roomKeyImport") as HTMLInputElement,
+  confirmImportBtn: document.getElementById("confirmImportBtn") as HTMLButtonElement,
+  cancelImportBtn: document.getElementById("cancelImportBtn") as HTMLButtonElement,
+  inviteLinkPreview: document.getElementById("inviteLinkPreview") as HTMLDivElement,
   useLocalStorage: document.getElementById("useLocalStorage") as HTMLInputElement,
   connectBtn: document.getElementById("connectBtn") as HTMLButtonElement,
   disconnectBtn: document.getElementById("disconnectBtn") as HTMLButtonElement,
@@ -19,6 +38,22 @@ const el = {
   log: document.getElementById("log") as HTMLDivElement,
   status: document.getElementById("status") as HTMLDivElement,
 };
+
+type RoomKeyUiState =
+  | "none"
+  | "loaded"
+  | "invite_ready"
+  | "invite_copied";
+
+let roomKeyBytes: Uint8Array | null = null;
+let inviteLink: string | null = null;
+let roomKeyUiState: RoomKeyUiState = "none";
+
+let client: GhostBunkerClient | null = null;
+let roomCrypto: RoomCryptoV01 | null = null;
+let hasWelcome = false;
+let hasRoomJoined = false;
+let isConnecting = false;
 
 function appendChat(line: string) {
   const ts = new Date().toISOString();
@@ -34,6 +69,76 @@ function log(line: string) {
 
 function setStatus(s: string) {
   el.status.textContent = s;
+}
+
+function generateRoomId(): string {
+  return bytesToBase64Url(randomBytes(9));
+}
+
+function hasRoomKeyLoaded(): boolean {
+  return roomKeyBytes !== null && roomKeyBytes.byteLength === 32;
+}
+
+function setRoomKeyUiState(state: RoomKeyUiState) {
+  roomKeyUiState = state;
+  switch (state) {
+    case "none":
+      el.roomKeyState.textContent = "No room key loaded";
+      break;
+    case "loaded":
+      el.roomKeyState.textContent = "Room key loaded locally";
+      break;
+    case "invite_ready":
+      el.roomKeyState.textContent = "Invite link ready";
+      break;
+    case "invite_copied":
+      el.roomKeyState.textContent = "Invite link copied";
+      break;
+  }
+  updateButtons();
+}
+
+function clearRoomKey() {
+  roomKeyBytes = null;
+  inviteLink = null;
+  roomCrypto = null;
+  el.inviteLinkPreview.hidden = true;
+  el.inviteLinkPreview.textContent = "";
+  setRoomKeyUiState("none");
+}
+
+function loadRoomKey(bytes: Uint8Array) {
+  roomKeyBytes = bytes;
+  roomCrypto = null;
+  setRoomKeyUiState("loaded");
+  log("Room key loaded locally");
+}
+
+function refreshInviteLink() {
+  if (!hasRoomKeyLoaded() || !roomKeyBytes) {
+    inviteLink = null;
+    el.copyInviteLinkBtn.disabled = true;
+    el.inviteLinkPreview.hidden = true;
+    return;
+  }
+  const roomCheck = validateRoomId(el.roomId.value);
+  if (!roomCheck.ok) {
+    inviteLink = null;
+    el.copyInviteLinkBtn.disabled = true;
+    return;
+  }
+  const roomId = el.roomId.value.trim();
+  const b64 = exportRoomKeyBase64Url(roomKeyBytes);
+  inviteLink = buildInviteLink({
+    baseUrl: window.location.origin + window.location.pathname,
+    roomId,
+    roomKeyB64Url: b64,
+  });
+  el.copyInviteLinkBtn.disabled = false;
+  el.inviteLinkPreview.hidden = true;
+  if (roomKeyUiState === "loaded" || roomKeyUiState === "invite_ready" || roomKeyUiState === "invite_copied") {
+    setRoomKeyUiState("invite_ready");
+  }
 }
 
 function loadPrefsIfEnabled() {
@@ -62,13 +167,26 @@ function savePrefsIfEnabled() {
   }
 }
 
-loadPrefsIfEnabled();
+function applyInviteFromUrl() {
+  const parsed = parseInviteFromLocation(window.location);
+  if (parsed.roomId) {
+    el.roomId.value = parsed.roomId;
+  }
+  if (parsed.gbkey) {
+    const imp = importRoomKeyBase64Url(parsed.gbkey);
+    if (imp.ok) {
+      loadRoomKey(imp.roomKeyBytes);
+      refreshInviteLink();
+      const clean = locationWithoutGbKeyFragment(window.location);
+      history.replaceState(null, "", clean);
+    } else {
+      setStatus(imp.error);
+    }
+  }
+}
 
-let client: GhostBunkerClient | null = null;
-let roomCrypto: RoomCryptoV01 | null = null;
-let hasWelcome = false;
-let hasRoomJoined = false;
-let isConnecting = false;
+loadPrefsIfEnabled();
+applyInviteFromUrl();
 
 function validWsUrl(s: string): boolean {
   try {
@@ -82,17 +200,14 @@ function validWsUrl(s: string): boolean {
 function validateConnectionInputs(): { ok: true } | { ok: false; error: string } {
   const wsUrl = el.wsUrl.value.trim();
   const nickname = el.nickname.value.trim();
-  const roomId = el.roomId.value.trim();
-  const passphrase = el.passphrase.value;
+  const roomIdCheck = validateRoomId(el.roomId.value);
 
   if (!validWsUrl(wsUrl)) return { ok: false, error: "WebSocket URL must be ws:// or wss://." };
   if (nickname.length > 0 && !asciiVisibleNoWhitespace(nickname)) {
     return { ok: false, error: "Nickname must be ASCII-visible (no whitespace, no emoji)." };
   }
-  if (!asciiVisibleNoWhitespace(roomId)) {
-    return { ok: false, error: "Room ID must be ASCII-visible (no whitespace, no emoji)." };
-  }
-  if (!passphrase || passphrase.length < 1) return { ok: false, error: "Passphrase required (never sent to server)." };
+  if (!roomIdCheck.ok) return { ok: false, error: roomIdCheck.error };
+  if (!hasRoomKeyLoaded()) return { ok: false, error: "Room key required (load or create locally; never sent to server)." };
   return { ok: true };
 }
 
@@ -103,28 +218,72 @@ function updateButtons() {
 
   el.connectBtn.disabled = connected || isConnecting || !connInputsOk;
   el.disconnectBtn.disabled = !connected;
-
-  // Join is only meaningful after WELCOME and before ROOM_JOINED.
   el.joinBtn.disabled = !connected || !hasWelcome || hasRoomJoined;
-
-  // Send only after ROOM_JOINED and message is valid.
   el.sendBtn.disabled = !connected || !hasRoomJoined || !messageOk;
+  el.copyInviteLinkBtn.disabled = !inviteLink;
 }
 
 updateButtons();
 
-for (const input of [el.wsUrl, el.nickname, el.roomId, el.passphrase]) {
+for (const input of [el.wsUrl, el.nickname, el.roomId]) {
   input.addEventListener("input", () => {
+    if (hasRoomKeyLoaded()) refreshInviteLink();
     updateButtons();
   });
 }
 el.message.addEventListener("input", () => updateButtons());
 
-el.togglePassphraseBtn.addEventListener("click", () => {
-  const isHidden = el.passphrase.type === "password";
-  el.passphrase.type = isHidden ? "text" : "password";
-  el.togglePassphraseBtn.textContent = isHidden ? "Hide" : "Show";
-  el.togglePassphraseBtn.setAttribute("aria-label", isHidden ? "Hide passphrase" : "Show passphrase");
+el.createRoomKeyBtn.addEventListener("click", () => {
+  setStatus("");
+  let roomId = el.roomId.value.trim();
+  if (!roomId) {
+    roomId = generateRoomId();
+    el.roomId.value = roomId;
+  }
+  const roomCheck = validateRoomId(roomId);
+  if (!roomCheck.ok) {
+    setStatus(roomCheck.error);
+    return;
+  }
+  const bytes = generateRoomKeyBytes();
+  loadRoomKey(bytes);
+  refreshInviteLink();
+  log("Invite link ready");
+});
+
+el.importRoomKeyBtn.addEventListener("click", () => {
+  el.importPanel.classList.add("open");
+  el.roomKeyImport.value = "";
+  el.roomKeyImport.focus();
+});
+
+el.cancelImportBtn.addEventListener("click", () => {
+  el.importPanel.classList.remove("open");
+  el.roomKeyImport.value = "";
+});
+
+el.confirmImportBtn.addEventListener("click", () => {
+  setStatus("");
+  const imp = importRoomKeyBase64Url(el.roomKeyImport.value);
+  if (!imp.ok) {
+    setStatus(imp.error);
+    return;
+  }
+  loadRoomKey(imp.roomKeyBytes);
+  el.importPanel.classList.remove("open");
+  el.roomKeyImport.value = "";
+  refreshInviteLink();
+});
+
+el.copyInviteLinkBtn.addEventListener("click", async () => {
+  if (!inviteLink) return;
+  try {
+    await navigator.clipboard.writeText(inviteLink);
+    setRoomKeyUiState("invite_copied");
+    log("Invite link copied");
+  } catch {
+    setStatus("Could not copy invite link to clipboard.");
+  }
 });
 
 el.clearLogBtn.addEventListener("click", () => {
@@ -167,15 +326,14 @@ el.connectBtn.addEventListener("click", async () => {
         updateButtons();
       }
       if (e.type === "encrypted_message") {
-        const passphrase = el.passphrase.value;
         const roomId = el.roomId.value.trim();
-        if (!passphrase || !roomCrypto || roomId !== e.roomId) {
-          log("DECRYPT_FAILED: unable to decrypt with current room passphrase");
+        if (!hasRoomKeyLoaded() || !roomKeyBytes || roomId !== e.roomId) {
+          log("DECRYPT_FAILED: unable to decrypt with current room key");
           return;
         }
         RoomCryptoV01.decrypt({
           roomId: e.roomId,
-          passphrase,
+          roomKeyBytes,
           keyId: e.keyId,
           nonce: e.nonce,
           ciphertext: e.ciphertext,
@@ -183,11 +341,10 @@ el.connectBtn.addEventListener("click", async () => {
           subtle: crypto.subtle,
         })
           .then((msg) => {
-            // Display decrypted plaintext only in chat area, not in technical log.
             appendChat(`DECRYPTED_MESSAGE: ${msg}`);
           })
           .catch(() => {
-            log("DECRYPT_FAILED: unable to decrypt with current room passphrase");
+            log("DECRYPT_FAILED: unable to decrypt with current room key");
           });
       }
       if (e.type === "closed") {
@@ -236,20 +393,20 @@ el.joinBtn.addEventListener("click", async () => {
   setStatus("");
   if (!client) return;
   const roomId = el.roomId.value.trim();
-  if (!asciiVisibleNoWhitespace(roomId)) {
-    setStatus("Room ID must be ASCII-visible (no whitespace, no emoji).");
+  const roomCheck = validateRoomId(roomId);
+  if (!roomCheck.ok) {
+    setStatus(roomCheck.error);
     return;
   }
-  const passphrase = el.passphrase.value;
-  if (!passphrase || passphrase.length < 1) {
-    setStatus("Passphrase required (never sent to server).");
+  if (!hasRoomKeyLoaded() || !roomKeyBytes) {
+    setStatus("Room key required (never sent to server).");
     return;
   }
 
   try {
     roomCrypto = await RoomCryptoV01.forRoom({
       roomId,
-      passphrase,
+      roomKeyBytes,
       subtle: crypto.subtle,
     });
     await client.joinRoom(roomId);
@@ -289,4 +446,3 @@ el.sendBtn.addEventListener("click", async () => {
   }
   updateButtons();
 });
-

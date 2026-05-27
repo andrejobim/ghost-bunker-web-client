@@ -1,59 +1,59 @@
-# Ghost Bunker Reference Web Client (v0.2-reference)
+# Ghost Bunker Reference Web Client (v0.2)
 
-This is the **first browser reference client** for the Ghost Bunker Protocol v0.1 server in this repository.
+This is the **browser reference client** for the Ghost Bunker Protocol v0.1 server.
 
 ## Goals
 
 - Reference-quality **browser** client for manual testing of:
   - v0.1 Protobuf wire format (`GhostEnvelope`) inside **binary WebSocket frames**
   - v0.1 state machine (HELLO → WELCOME → JOIN_ROOM → SEND_ENCRYPTED_MESSAGE)
-  - client-side E2EE v0.1: **PBKDF2-HMAC-SHA256 + AES-256-GCM** (WebCrypto)
+  - client-side E2EE: **32-byte room key + AES-256-GCM** (WebCrypto); wire `cipher_suite` unchanged
+- Room key + **invite link** (`#gbkey=`) instead of manual passphrase
 - Minimal UI (connect / join / encrypt+send / log)
-- Client-side crypto unit tests
+- Client-side crypto and invite-link unit tests
+
+See [docs/e2ee-v0.2.md](docs/e2ee-v0.2.md) for room key and invite link details.
 
 ## Hard rules enforced
 
 - No plaintext over WebSocket (binary frames only)
-- No passphrase sent to server
-- No derived key sent to server
+- No room key, gbkey, passphrase, or derived key sent to server
 - No telemetry
-- No persistent identity
-- `localStorage` is **optional** and **disabled by default**
+- No persistent identity / login / accounts
+- `localStorage` is **optional** and **disabled by default**; when enabled, stores only ws URL, nickname, room ID
 - Emoji / non-ASCII blocked before encryption
 - Message plaintext ≤ 4 KB (bytes) before encryption
 - Ciphertext ≤ 16 KB
 
 ## Setup
 
-From repo root:
-
 ```bash
-cd ghost-bunker-protocol-client
 npm install
 npm run gen
 ```
 
 ## Run
 
-1. Start the server:
-
-```bash
-mvn spring-boot:run
-```
+1. Start the Ghost Bunker server (see server repo).
 
 2. Start the web client:
 
 ```bash
-cd ghost-bunker-protocol-client
 npm run dev
 ```
 
-Open the printed Vite URL and connect to `ws://localhost:8080/ghost-bunker`.
+Open the printed Vite URL (e.g. `http://localhost:5173`) and connect to `ws://localhost:8080/ghost-bunker`.
+
+Use **Create secure room key** to generate a local 32-byte key and copy the invite link for other participants.
 
 ## Tests
 
 ```bash
-cd ghost-bunker-protocol-client
 npm test
 ```
 
+## Build
+
+```bash
+npm run build
+```

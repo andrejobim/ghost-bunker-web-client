@@ -1,13 +1,12 @@
-import { base64UrlToBytes, bytesToBase64Url, randomBytes } from "./bytes";
+import { randomBytes } from "./bytes";
+import { keyIdFromRoomKeyBytes, ROOM_KEY_BYTES } from "./room_key";
 
 export type CipherSuiteName = "PBKDF2_HMAC_SHA256_AES_256_GCM";
 
 type RoomCryptoV01Params = {
   roomId: string;
-  passphrase: string;
+  roomKeyBytes: Uint8Array;
   subtle: SubtleCrypto;
-  pbkdf2Iterations?: number;
-  roomSaltBytes?: Uint8Array;
 };
 
 export type EncryptedPayload = {
@@ -21,44 +20,33 @@ export class RoomCryptoV01 {
   private readonly roomId: string;
   private readonly subtle: SubtleCrypto;
   private readonly keyId: string;
-  private readonly pbkdf2Iterations: number;
   private readonly aesKey: CryptoKey;
 
   private constructor(args: {
     roomId: string;
     subtle: SubtleCrypto;
     keyId: string;
-    pbkdf2Iterations: number;
     aesKey: CryptoKey;
   }) {
     this.roomId = args.roomId;
     this.subtle = args.subtle;
     this.keyId = args.keyId;
-    this.pbkdf2Iterations = args.pbkdf2Iterations;
     this.aesKey = args.aesKey;
   }
 
   static async forRoom(params: RoomCryptoV01Params): Promise<RoomCryptoV01> {
-    const pbkdf2Iterations = params.pbkdf2Iterations ?? 210_000;
-    const roomSaltBytes = params.roomSaltBytes ?? randomBytes(16);
-    const keyId = bytesToBase64Url(roomSaltBytes);
+    if (params.roomKeyBytes.byteLength !== ROOM_KEY_BYTES) {
+      throw new Error(`room_key must be exactly ${ROOM_KEY_BYTES} bytes.`);
+    }
 
-    const passphraseKey = await params.subtle.importKey(
+    const keyId = await keyIdFromRoomKeyBytes({
+      roomKeyBytes: params.roomKeyBytes,
+      subtle: params.subtle,
+    });
+
+    const aesKey = await params.subtle.importKey(
       "raw",
-      new TextEncoder().encode(params.passphrase),
-      "PBKDF2",
-      false,
-      ["deriveKey"],
-    );
-
-    const aesKey = await params.subtle.deriveKey(
-      {
-        name: "PBKDF2",
-        hash: "SHA-256",
-        salt: roomSaltBytes,
-        iterations: pbkdf2Iterations,
-      },
-      passphraseKey,
+      params.roomKeyBytes,
       { name: "AES-GCM", length: 256 },
       false,
       ["encrypt", "decrypt"],
@@ -68,7 +56,6 @@ export class RoomCryptoV01 {
       roomId: params.roomId,
       subtle: params.subtle,
       keyId,
-      pbkdf2Iterations,
       aesKey,
     });
   }
@@ -81,7 +68,14 @@ export class RoomCryptoV01 {
    * AAD v1 is reconstructed entirely from non-secret metadata so it never requires
    * server-side interpretation. Keep this stable across implementations.
    */
-  private aadV1(params: { protocol: string; version: string; roomId: string; keyId: string; cipherSuite: CipherSuiteName; aadVersion: number }): Uint8Array {
+  private aadV1(params: {
+    protocol: string;
+    version: string;
+    roomId: string;
+    keyId: string;
+    cipherSuite: CipherSuiteName;
+    aadVersion: number;
+  }): Uint8Array {
     const s = `${params.protocol}|${params.version}|${params.roomId}|${params.keyId}|${params.cipherSuite}|${params.aadVersion}`;
     return new TextEncoder().encode(s);
   }
@@ -111,35 +105,31 @@ export class RoomCryptoV01 {
 
   static async decrypt(params: {
     roomId: string;
-    passphrase: string;
+    roomKeyBytes: Uint8Array;
     keyId: string;
     nonce: Uint8Array;
     ciphertext: Uint8Array;
     aadVersion: number;
     subtle: SubtleCrypto;
-    pbkdf2Iterations?: number;
   }): Promise<string> {
     if (params.ciphertext.length > 16_384) {
       throw new Error("Ciphertext exceeds 16 KB.");
     }
-    const pbkdf2Iterations = params.pbkdf2Iterations ?? 210_000;
-    const roomSaltBytes = base64UrlToBytes(params.keyId);
+    if (params.roomKeyBytes.byteLength !== ROOM_KEY_BYTES) {
+      throw new Error(`room_key must be exactly ${ROOM_KEY_BYTES} bytes.`);
+    }
 
-    const passphraseKey = await params.subtle.importKey(
+    const expectedKeyId = await keyIdFromRoomKeyBytes({
+      roomKeyBytes: params.roomKeyBytes,
+      subtle: params.subtle,
+    });
+    if (params.keyId !== expectedKeyId) {
+      throw new Error("key_id does not match loaded room key.");
+    }
+
+    const aesKey = await params.subtle.importKey(
       "raw",
-      new TextEncoder().encode(params.passphrase),
-      "PBKDF2",
-      false,
-      ["deriveKey"],
-    );
-    const aesKey = await params.subtle.deriveKey(
-      {
-        name: "PBKDF2",
-        hash: "SHA-256",
-        salt: roomSaltBytes,
-        iterations: pbkdf2Iterations,
-      },
-      passphraseKey,
+      params.roomKeyBytes,
       { name: "AES-GCM", length: 256 },
       false,
       ["decrypt"],
@@ -157,4 +147,3 @@ export class RoomCryptoV01 {
     return new TextDecoder().decode(ptBuf);
   }
 }
-
