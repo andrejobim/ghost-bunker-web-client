@@ -14,6 +14,9 @@ This is the **browser reference client** for the Ghost Bunker Protocol v0.1 serv
 
 See [docs/e2ee-v0.2.md](docs/e2ee-v0.2.md) for room key and invite link details.
 
+Cryptographic review milestone (planning only, no v0.x advanced crypto):
+[docs/v1.0-cryptographic-review.md](docs/v1.0-cryptographic-review.md).
+
 ## Hard rules enforced
 
 - No plaintext over WebSocket (binary frames only)
